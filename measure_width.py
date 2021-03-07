@@ -24,9 +24,9 @@ def rle_encoding(x):
     return run_lengths, run_rows
 
 def cal_witdh():
-    # img_path = r'AZK1jDGIZC1zmuooSZCzEg_DOM.tif'
+    img_path = r'AZK1jDGIZC1zmuooSZCzEg_DOM.tif'
     img_path = r'Ld-CMATy8ZxKap6VAtZTEg_DOM.tif'
-    # img_path = r'v-VR9FB7kCxU1eDLEtFiJQ_DOM.tif'
+    img_path = r'v-VR9FB7kCxU1eDLEtFiJQ_DOM.tif'
     target_ids = [244]
     im_cv = cv2.imread(img_path)
 
@@ -35,7 +35,7 @@ def cal_witdh():
     AOI = np.zeros((len(class_idx), len(class_idx)))
     for i in target_ids:
         AOI = np.logical_or(AOI, class_idx == i)
-        print(AOI)
+        # print(AOI)
     # AOI = np.where(AOI == 0, 0, 1).astype(np.uint8)
     print(AOI)
 
@@ -44,10 +44,13 @@ def cal_witdh():
     g_close = cv2.getStructuringElement(cv2.MORPH_RECT, morph_kernel_close)
     g_open  = cv2.getStructuringElement(cv2.MORPH_RECT, morph_kernel_open)
 
-    AOI = np.where(AOI == 0, 0, 1).astype(np.uint8)
+    raw_AOI = np.where(AOI == 0, 0, 1).astype(np.uint8)
+
+    cv2.imshow("Raw image", np.where(raw_AOI == 0, 0, 255).astype(np.uint8) )
 
     yaw_deg =  226.4377593994141 - 90
-    AOI = imutils.rotate_bound(AOI, yaw_deg)
+
+    AOI = imutils.rotate_bound(raw_AOI, yaw_deg)
 
     cv2_closed = cv2.morphologyEx(AOI, cv2.MORPH_CLOSE, g_close) # fill small gaps
     cv2_opened = cv2.morphologyEx(cv2_closed, cv2.MORPH_OPEN, g_open)
@@ -124,26 +127,85 @@ def cal_witdh():
 
     # find contour
     raw_contours, hierarchy = cv2.findContours(cv2_opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    all_pair_list = seg_contours(raw_contours[5:6], opened_color)
-    # all_pair_list = seg_contours(raw_contours[:], opened_color)
+    # all_pair_list = seg_contours(raw_contours[5:6], opened_color)
+    all_pair_list = seg_contours(raw_contours[:], opened_color)
+    end_points = np.zeros((len(all_pair_list) * 2, 2))
     for idx, pair in enumerate(all_pair_list):
         x = int(pair[1])
         y = int(pair[2])
         end_x = int(pair[3])
         end_y = int(pair[4])
         cv2.line(opened_color, (x, y), (end_x, end_y), (255, 0, 0), thickness=line_thickness)
+        end_points[idx * 2] = np.array([x, y])
+        end_points[idx * 2 + 1] = np.array([end_x, end_y])
 
     cv2.imshow("opened_color added pairs", opened_color.astype(np.uint8))
 
+    end_points = np.hstack((end_points, np.ones((end_points.shape[0], 1))))
+    tx = AOI.shape[0] / 2
+    ty = AOI.shape[1] / 2
+    print("tx, ty:", tx, ty)
+    end_points_transed = points_2D_translation(end_points, tx, ty)
+    print("end_points_transed:", end_points_transed[0])
+
+    tx = raw_AOI.shape[0] / 2
+    ty = raw_AOI.shape[1] / 2
+
+    print("tx, ty:", tx, ty)
+
+    end_points_rotated = points_2D_rotated(end_points_transed, yaw_deg)
+    print("end_points_rotated:", end_points_rotated[0])
+    end_points_transed = points_2D_translation(end_points_rotated, -tx, ty)
+
+    print("final end_points_transed:", end_points_transed.astype(int))
+    line_thickness = 1
+    radius = 2
+    raw_AOI_color = np.where(raw_AOI == 0, 0, 255).astype(np.uint8)
+    raw_AOI_color = cv2.merge((raw_AOI_color, raw_AOI_color, raw_AOI_color))
+    line_cnt = len(end_points_transed)
+    line_cnt = int(line_cnt)
+    end_points_transed = end_points_transed.astype(int)
+    for idx in range(0, line_cnt, 2):
+        col = end_points_transed[idx][0]
+        row = end_points_transed[idx][1]
+        # to_y[idx2] = row
+
+        end_x = end_points_transed[idx + 1][0]
+        end_y = end_points_transed[idx + 1][1]
+        cv2.line(raw_AOI_color, (col, row), (end_x, end_y), (0, 0, 255), thickness=line_thickness)
+        # cv2.circle(raw_AOI_color, (end_x, end_y), radius, (0, 255, 0), line_thickness)
+        # cv2.circle(raw_AOI_color, (col, row), radius, (0, 255, 0), line_thickness)
+    cv2.imshow("raw_AOI_color", raw_AOI_color)
+
+    # end_points_transed = end_points_transed[:, 0:2]
 
 
-    # rotated = imutils.rotate_bound(opened_color, -45)
+    # rotated = imutils.rotate_bound(opened_color, -45)....
+
+
     # cv2.imshow("rotated", rotated)
     # to_RLE = np.where(to_RLE == 0, 0, 255).astype(np.uint8)
     # cv2.imshow("to_RLE", to_RLE.astype(np.uint8))
 
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+
+def points_2D_translation(points, tx, ty):
+    t_mat = np.array([[1, 0, -tx],
+                      [0, -1, ty],
+                      [0, 0, 1]])
+    results = points.dot(t_mat.T)
+    return results
+
+def points_2D_rotated(points, angle_deg):
+    angle = math.radians(angle_deg)
+    r_mat = np.array([
+        [np.cos(angle), -np.sin(angle), 0],
+        [np.sin(angle),  np.cos(angle), 0],
+        [0, 0, 1]])
+    results = points.dot(r_mat.T)
+    return results
+
 
 def seg_contours(raw_contours, opened_color_img, interval_pix=10, max_width_pix=50):
     contours = [np.squeeze(cont) for cont in raw_contours]
@@ -181,7 +243,7 @@ def seg_contours(raw_contours, opened_color_img, interval_pix=10, max_width_pix=
             all_pair_list.append((idx, pair[0], row, pair[1], row))
             # pairs.append(pair)
         # all_pair_list
-    print(all_pair_list)
+    print("all_pair_list:", all_pair_list)
 
     return all_pair_list
 
