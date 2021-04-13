@@ -6,13 +6,15 @@ import imutils
 import fiona
 import sys
 sys.path.append(r'D:\Code\StreetView\gsv_pano')
+sys.path.append(r'E:\USC_OneDrive\OneDrive - University of South Carolina\StreetView\gsv_pano')
 
 from pano import GSV_pano
 from PIL import Image
 import time
 import os
 import glob
-from label_centerlines import get_centerline
+import multiprocessing as mp
+# from label_centerlines import get_centerline
 from shapely.geometry import Point, Polygon, mapping, LineString, MultiLineString
 from shapely import speedups
 speedups.disable()
@@ -41,19 +43,23 @@ def rle_encoding(x):
     return run_lengths, run_rows
 
 
+
 def cal_witdh_from_list(img_list, crs_local=6847):
 
     # img_path = r'ZXyk9lKhL5siKJglQPqfMA_DOM_0.05.tif'
     # img_list = [img_path]
     total_cnt = len(img_list)
     start_time = time.perf_counter()
+    # print("total_cnt: ", total_cnt)
     cnt = 0
     while len(img_list) > 0:
         try:
             img_path = img_list.pop()
+            cnt = total_cnt - len(img_list)
             cnt += 1
-            cal_witdh(img_path, crs_local=6847)
-            print(cnt, img_path)
+            cal_witdh(img_path, crs_local=crs_local)
+            if cnt % 100 == 0:
+                print(cnt, img_path)
         except Exception as e:
             print("Error in cal_witdh_from_list():", e)
             continue
@@ -108,7 +114,7 @@ def cal_witdh(img_path, crs_local=6847):
 
 
     yaw_deg =  -pano_yaw_deg
-    print("yaw_deg:", yaw_deg)
+    # print("yaw_deg:", yaw_deg)
 
     cv2_closed = cv2.morphologyEx(target_np, cv2.MORPH_CLOSE, g_close) # fill small gaps
     cv2_opened = cv2.morphologyEx(cv2_closed, cv2.MORPH_OPEN, g_open)
@@ -207,6 +213,7 @@ def cal_witdh(img_path, crs_local=6847):
     #     cv2.polylines(img_rotated_color, [pts], False, (255), 2)
 
     all_pair_list = seg_contours(raw_contours[:], img_rotated_color)
+    # print(all_pair_list)
     end_points = np.zeros((len(all_pair_list) * 2, 2))
 
     for idx, pair in enumerate(all_pair_list):
@@ -261,13 +268,15 @@ def cal_witdh(img_path, crs_local=6847):
         # cv2.circle(raw_AOI_color, (col, row), radius, (0, 255, 0), line_thickness)
 
     # write txt
-    saved_path = r'H:\Research\sidewalk_wheelchair\DC_DOMs_measuremens'
+    saved_path = r'D:\Research\sidewalk_wheelchair\DC_DOMs_measuremens'
     new_name = os.path.join(saved_path, f'{panoId}_widths.txt')
     worldfile_ext = img_path[-3] + img_path[-1] + 'w'
     worldfile_path = img_path[:-3] + worldfile_ext
     wf_resolution, wf_x, wf_y = read_worldfile(worldfile_path)
+    # print("wf_resolution, wf_x, wf_y:", wf_resolution, wf_x, wf_y)
     f = open(new_name, 'w')
     f.writelines('center_x,center_y,length,col,row,end_x,end_y\n')
+    # print("new_name:", new_name)
     for idx in range(0, line_cnt, 2):
         col = end_points_transed[idx][0] * wf_resolution + wf_x
         row = wf_y - end_points_transed[idx][1] * wf_resolution
@@ -284,8 +293,9 @@ def cal_witdh(img_path, crs_local=6847):
         length = length * wf_resolution
 
         # cv2.line(opened_color, (col, row), (end_x , end_y), (0, 0, 255), thickness=line_thickness)
-        f.writelines(f'{center_x},{center_y},{length},{col},{row},{end_x},{end_y}\n')
-
+        f.writelines(f'{center_x:.3f},{center_y:.3f},{length:.3f},{col:.3f},{row:.3f},{end_x:.3f},{end_y:.3f}\n')
+        # print("center_x, center_x:", f'{center_x},{center_y},{length},{col},{row},{end_x},{end_y}\n')
+        # f.writelines(f'{center_x},{center_y},{length},{col},{row},{end_x},{end_y}\n')
     f.close()
 
     # cv2.imshow("opened_color", opened_color)
@@ -344,8 +354,8 @@ def cal_witdh0(img_path):
     # yaw_deg =  226.4377593994141 - 90
     # yaw_deg =  92.53645324707031
     yaw_deg =  -pano_yaw_deg
-    print("yaw_deg:", yaw_deg)
-
+    # print("yaw_deg:", yaw_deg)
+    #
     cv2_closed = cv2.morphologyEx(raw_AOI, cv2.MORPH_CLOSE, g_close) # fill small gaps
     cv2_opened = cv2.morphologyEx(cv2_closed, cv2.MORPH_OPEN, g_open)
 
@@ -375,8 +385,8 @@ def cal_witdh0(img_path):
     # cv2_closed = np.where(cv2_closed == 0, 0, 255).astype(np.uint8)
     # cv2.imshow("cv2_closed", cv2_closed.astype(np.uint8))
 
-    # for y in line_ys:
-    #     cv2.line(opened_color, (start_x, y), (end_x, y), (0, 255, 0), thickness=line_thickness)
+    for y in line_ys:
+        cv2.line(opened_color, (start_x, y), (end_x, y), (0, 255, 0), thickness=line_thickness)
 
     angle_deg = 0
     angle_rad = math.radians(angle_deg)
@@ -692,9 +702,24 @@ def test1():
                           isClosed, color, thickness)
 
 def get_all_widths():
-    DOM_dir = r'H:\Research\sidewalk_wheelchair\DC_DOMs'
-    img_list = glob.glob(os.path.join(DOM_dir, '*.tif'))
-    cal_witdh_from_list(img_list[1300:])
+    DOM_dir = r'D:\Research\sidewalk_wheelchair\DC_DOMs'
+    img_list = glob.glob(os.path.join(DOM_dir, '*DOM*.tif'))
+    skip = 1300 + 1400 + 900 + 1500 + 200 + 2100
+
+    img_list_mp = mp.Manager().list()
+    for img in img_list[skip:]:
+        img_list_mp.append(img)
+
+    cal_witdh_from_list(img_list)
+
+    process_cnt = 15
+    pool = mp.Pool(processes=process_cnt)
+
+    for i in range(process_cnt):
+        pool.apply_async(cal_witdh_from_list, args=(img_list_mp,))
+    pool.close()
+    pool.join()
+
 
 if __name__ == "__main__":
     # test1()
