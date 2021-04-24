@@ -5,9 +5,10 @@ import math
 import imutils
 import fiona
 import sys
+import pandas as pd
 sys.path.append(r'D:\Code\StreetView\gsv_pano')
 sys.path.append(r'E:\USC_OneDrive\OneDrive - University of South Carolina\StreetView\gsv_pano')
-
+import geopandas as gpd
 from pano import GSV_pano
 from PIL import Image
 import time
@@ -21,6 +22,31 @@ speedups.disable()
 # stackoverflow.com/questions/62075847/using-qgis-and-shaply-error-geosgeom-createlinearring-r-returned-a-null-pointer
 
 LINE_COUNT = 160
+
+
+def cv_img_rotate_bound(image, angle, flags=cv2.INTER_NEAREST):
+    # grab the dimensions of the image and then determine the
+    # center
+    (h, w) = image.shape[:2]
+    (cX, cY) = (w / 2, h / 2)
+
+    # grab the rotation matrix (applying the negative of the
+    # angle to rotate clockwise), then grab the sine and cosine
+    # (i.e., the rotation components of the matrix)
+    M = cv2.getRotationMatrix2D((cX, cY), -angle, 1.0)
+    cos = np.abs(M[0, 0])
+    sin = np.abs(M[0, 1])
+
+    # compute the new bounding dimensions of the image
+    nW = int((h * sin) + (w * cos))
+    nH = int((h * cos) + (w * sin))
+
+    # adjust the rotation matrix to take into account translation
+    M[0, 2] += (nW / 2) - cX
+    M[1, 2] += (nH / 2) - cY
+
+    # perform the actual rotation and return the image
+    return cv2.warpAffine(image, M, (nW, nH), flags=flags)
 
 def rle_encoding(x):
     '''
@@ -50,14 +76,22 @@ def cal_witdh_from_list(img_list, crs_local=6847):
     # img_list = [img_path]
     total_cnt = len(img_list)
     start_time = time.perf_counter()
-    # print("total_cnt: ", total_cnt)
+    # print("total_cnt: ", os.getpid(),  total_cnt)
     cnt = 0
+
+    yaw_csv_file = r'H:\USC_OneDrive\OneDrive - University of South Carolina\Research\sidewalk_wheelchair\vectors\near_compassA.csv'
+    # yaw_csv_file = r'E:\USC_OneDrive\OneDrive - University of South Carolina\Research\sidewalk_wheelchair\vectors\near_compassA.csv'
+    df_yaw = pd.read_csv(yaw_csv_file)
+    df_yaw = df_yaw.set_index("panoId")
+
+
+
     while len(img_list) > 0:
         try:
             img_path = img_list.pop()
             cnt = total_cnt - len(img_list)
             cnt += 1
-            cal_witdh(img_path, crs_local=crs_local)
+            cal_witdh(img_path, df_yaw, crs_local=crs_local)
             if cnt % 100 == 0:
                 print(cnt, img_path)
         except Exception as e:
@@ -79,7 +113,7 @@ def read_worldfile(file_path):
         return None, None, None
 
 
-def cal_witdh(img_path, crs_local=6847):
+def cal_witdh(img_path, df_yaw, crs_local=6847):
 
 
     basename = os.path.basename(img_path)
@@ -88,19 +122,26 @@ def cal_witdh(img_path, crs_local=6847):
     json_file = os.path.join(dirname, panoId + '.json')
     pano1 = GSV_pano(json_file=json_file, crs_local=6847)
     # print(pano1.jdata)
+
+
     pano_yaw_deg = pano1.jdata['Projection']['pano_yaw_deg']
-
-
+    street_yaw = df_yaw.loc[panoId]['CompassA']
+    if abs(street_yaw - pano_yaw_deg) > 150:
+        pano_yaw_deg = street_yaw + 180
+    else:
+        pano_yaw_deg = street_yaw
 
     img_pil = Image.open(img_path)
     img_np = np.array(img_pil)
     # im_cv = cv2.imread(img_path)
-    target_ids = [12]
+    target_ids = [8, 12]
 
     class_idx = img_np
     target_np = np.zeros(img_np.shape)
     for i in target_ids:
         target_np = np.logical_or(target_np, class_idx == i)
+
+
 
     # AOI = np.where(AOI == 0, 0, 1).astype(np.uint8)
 
@@ -122,7 +163,7 @@ def cal_witdh(img_path, crs_local=6847):
     cv2_opened = np.where(cv2_opened == 0, 0, 255).astype(np.uint8)
 
     opened_color = cv2.merge((cv2_opened, cv2_opened, cv2_opened))
-    img_rotated = imutils.rotate_bound(cv2_opened, yaw_deg)
+    img_rotated = cv_img_rotate_bound(cv2_opened, yaw_deg)
 
     # cv2.imshow("img_rotated", np.where(img_rotated == 0, 0, 255).astype(np.uint8))
 
@@ -206,13 +247,20 @@ def cal_witdh(img_path, crs_local=6847):
     # all_pair_list = seg_contours(raw_contours[5:6], opened_color)
     img_rotated_color = cv2.merge((img_rotated, img_rotated, img_rotated))
 
+    category_list = [58, 255]
+    raw_img_rotated = cv_img_rotate_bound(img_np, yaw_deg)
+    # cv2.imshow("raw_img_rotated", raw_img_rotated)
+
+    car_mask_np = create_mask(raw_img_rotated, category_list=category_list)
+
     # for l in centerlines:
     #     pts = l.coords.xy
     #     pts = np.array(pts).T.reshape((-1, 1, 2)).astype(np.int32)
     #     # pts = np.array(pts).T.
     #     cv2.polylines(img_rotated_color, [pts], False, (255), 2)
 
-    all_pair_list = seg_contours(raw_contours[:], img_rotated_color)
+    # all_pair_list = seg_contours(raw_contours[:], img_rotated_color)
+    all_pair_list = seg_contours(raw_contours[:], car_mask_np, img_rotated)
     # print(all_pair_list)
     end_points = np.zeros((len(all_pair_list) * 2, 2))
 
@@ -262,20 +310,23 @@ def cal_witdh(img_path, crs_local=6847):
 
         end_x = end_points_transed[idx + 1][0]
         end_y = end_points_transed[idx + 1][1]
-        cv2.line(opened_color, (col, row), (end_x , end_y), (0, 0, 255), thickness=line_thickness)
+        # cv2.line(opened_color, (col, row), (end_x , end_y), (0, 0, 255), thickness=line_thickness)
         # cv2.line(im_dom,       (col, row), (end_x , end_y), (0, 0, 255), thickness=line_thickness)
         # cv2.circle(raw_AOI_color, (end_x, end_y), radius, (0, 255, 0), line_thickness)
         # cv2.circle(raw_AOI_color, (col, row), radius, (0, 255, 0), line_thickness)
 
     # write txt
-    saved_path = r'D:\Research\sidewalk_wheelchair\DC_DOMs_measuremens'
-    new_name = os.path.join(saved_path, f'{panoId}_widths.txt')
+    saved_path = r'D:\Research\sidewalk_wheelchair\DC_DOMs_measuremens2'
+    if not os.path.exists(saved_path):
+        os.makedirs(saved_path)
+    # saved_path = r'H:\Research\sidewalk_wheelchair\DC_DOMs_measuremens'
+    new_name = os.path.join(saved_path, f'{panoId}_widths.csv')
     worldfile_ext = img_path[-3] + img_path[-1] + 'w'
     worldfile_path = img_path[:-3] + worldfile_ext
     wf_resolution, wf_x, wf_y = read_worldfile(worldfile_path)
     # print("wf_resolution, wf_x, wf_y:", wf_resolution, wf_x, wf_y)
     f = open(new_name, 'w')
-    f.writelines('center_x,center_y,length,col,row,end_x,end_y\n')
+    f.writelines('panoId,contour_num,center_x,center_y,length,start_x,start_y,end_x,end_y,cover_ratio,is_touched\n')
     # print("new_name:", new_name)
     for idx in range(0, line_cnt, 2):
         col = end_points_transed[idx][0] * wf_resolution + wf_x
@@ -290,15 +341,17 @@ def cal_witdh(img_path, crs_local=6847):
 
         idx2 = int(idx/2)
         length = all_pair_list[idx2][3] - all_pair_list[idx2][1]
+        contour_num = all_pair_list[idx2][0]
         length = length * wf_resolution
+        cover_ratio = all_pair_list[idx2][5]
+        is_touched = all_pair_list[idx2][6]
 
-        # cv2.line(opened_color, (col, row), (end_x , end_y), (0, 0, 255), thickness=line_thickness)
-        f.writelines(f'{center_x:.3f},{center_y:.3f},{length:.3f},{col:.3f},{row:.3f},{end_x:.3f},{end_y:.3f}\n')
+        f.writelines(f'{panoId},{contour_num},{center_x:.3f},{center_y:.3f},{length:.3f},{col:.3f},{row:.3f},{end_x:.3f},{end_y:.3f},{cover_ratio:.3f},{int(is_touched)}\n')
         # print("center_x, center_x:", f'{center_x},{center_y},{length},{col},{row},{end_x},{end_y}\n')
         # f.writelines(f'{center_x},{center_y},{length},{col},{row},{end_x},{end_y}\n')
     f.close()
 
-    # cv2.imshow("opened_color", opened_color)
+    cv2.imshow("opened_color", opened_color)
     # cv2.imshow("im_dom", im_dom)
     # cv2.imshow("img_rotated_color", img_rotated_color)
 
@@ -308,11 +361,10 @@ def cal_witdh(img_path, crs_local=6847):
     # rotated = imutils.rotate_bound(opened_color, -45)....
 
 
-    # cv2.imshow("rotated", rotated)
     # to_RLE = np.where(to_RLE == 0, 0, 255).astype(np.uint8)
     # cv2.imshow("to_RLE", to_RLE.astype(np.uint8))
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 
 def cal_witdh0(img_path):
@@ -427,8 +479,8 @@ def cal_witdh0(img_path):
 
             # cv2.line(opened_color, (col, row), (end_x, end_y), (0, 0, 255), thickness=line_thickness)
             # cv2.circle(opened_color, (col, row), radius, (0, 255, 0), line_thickness)
-            
-            
+
+
     # cv2.imshow("cv2_opened", opened_color)
 
     # find contour
@@ -537,13 +589,13 @@ def points_2D_rotated(points, angle_deg):
 
 
 
-def seg_contours(raw_contours, opened_color_img, interval_pix=10, max_width_pix=50):
+def seg_contours(raw_contours, mask_np,  img_rotated, interval_pix=10, max_width_pix=50):
     contours = [np.squeeze(cont) for cont in raw_contours]
 
-    con = cv2.drawContours(opened_color_img, raw_contours, -1, (0, 255, 0), 2)
+    # con = cv2.drawContours(opened_color_img, raw_contours, -1, (0, 255, 0), 2)
     # cv2.imshow("raw_contours", opened_color_img)
 
-    centeral_col = opened_color_img.shape[1] / 2
+    centeral_col = mask_np.shape[1] / 2
     centeral_col = int(centeral_col)
 
     all_pair_list = []
@@ -572,12 +624,104 @@ def seg_contours(raw_contours, opened_color_img, interval_pix=10, max_width_pix=
             #     pair = pairs[idx2 - 1]
 
             pairs[idx2] = pair
-            all_pair_list.append((idx, pair[0], row, pair[1], row))
+
+            is_touched = line_ends_touched(pair[0], row, pair[1], row, mask_np, width=13, height=1, threshold=6)
+
+            cover_ratio = -1
+
+            target_mask_np = np.logical_or(img_rotated, mask_np)
+
+            cover_ratio = get_cover_ratio(int(np.mean(pair[0:2])), int(row), target_mask_np, width=length, height=length)
+            # cover_ratio = 0
+            cover_ratio_threshold = 0.5
+
+            all_pair_list.append((idx, pair[0], row, pair[1], row, cover_ratio, is_touched))
             # pairs.append(pair)
         # all_pair_list
     # print("all_pair_list:", all_pair_list)
 
     return all_pair_list
+
+def get_cover_ratio(col, row, mask_np, width, height):
+
+    try:
+        cover_ratio = -1
+        if width * height == 0:
+            return cover_ratio
+        mask_w, mask_h = mask_np.shape
+        col_start = max(0, int(col - width/2))
+        col_end = min(mask_w - 1, int(col + width/2))
+
+        row_start = max(0, int(row - height/2))
+        row_end = min(mask_h - 1, int(row + height/2))
+
+        samples = mask_np[row_start:row_end, col_start:col_end]
+        # samples = samples / 255
+
+        cover_ratio = samples.sum() / float(width * height)
+
+    #  show image
+    # cv_mask_color = cv2.merge([np.where(mask_np > 0, 255, 0).astype(np.uint8)])
+    # cv_mask_color = cv2.merge([cv_mask_color, cv_mask_color, cv_mask_color])
+    # top_left = (col_start, row_start)
+    # bottom_right = (col_end, row_end)
+    # cv2.rectangle(cv_mask_color, top_left, bottom_right, color=(0, 255, 0), thickness=2)
+    # cv2.imshow(f"cover_ratio: {cover_ratio:.3f}", cv_mask_color)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+
+        return cover_ratio
+    except Exception as e:
+        print("Error in get_cover_ratio():", e)
+        return cover_ratio
+
+def line_ends_touched(x1, y1, x2, y2, mask_np, width=13, height=1, threshold=6):
+    is_touched1 = check_touched(x1, y1, mask_np, width=width, height=height, threshold=threshold)
+    is_touched2 = check_touched(x2, y2, mask_np, width=width, height=height, threshold=threshold)
+    #
+    # cv2.imshow("mask_np", cv2.merge([np.where(mask_np > 0, 255, 0).astype(np.uint8)]))
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+
+    # re = (is_touched1 or is_touched2)
+
+    return (is_touched1 or is_touched2)
+
+def create_mask(img_np, category_list):
+    '''
+    create a mask, where True indicates the taget categories.
+    :param img_np:
+    :param category_list:
+    :return:
+    '''
+    mask_np = np.zeros(shape=img_np.shape, dtype=bool)
+    class_idx = img_np
+    for category in category_list:
+        mask_np = np.logical_or(mask_np, img_np == category)
+
+    return mask_np
+
+def check_touched(col, row, mask_np, width=6, height=1, threshold=6):
+    '''
+    check whethe a sidewalk touchs cars. car: 58, other: 255
+    :param col:
+    :param row:
+    :param img_np:
+    :param threshold:
+    :return:
+    '''
+    mask_w, mask_h = mask_np.shape
+    col_start = max(0, int(col - width/1))
+    col_end = min(mask_w - 1, int(col + width/1))
+
+    row_start = max(0, int(row - height/1))
+    row_end = min(mask_h - 1, int(row + height/1))
+
+    samples = mask_np[row_start:row_end, col_start:col_end]
+
+    is_touched = samples.sum() > threshold
+
+    return is_touched
 
 def get_pair_col(cols, central_col):
     '''
@@ -703,28 +847,99 @@ def test1():
 
 def get_all_widths():
     DOM_dir = r'D:\Research\sidewalk_wheelchair\DC_DOMs'
-    img_list = glob.glob(os.path.join(DOM_dir, '*DOM*.tif'))
-    skip = 1300 + 1400 + 900 + 1500 + 200 + 2100
+    # DOM_dir = r'H:\Research\sidewalk_wheelchair\DC_DOMs'
+    # img_list = glob.glob(os.path.join(DOM_dir, '*DOM*.tif'))
+    # img_list = [r'D:\Research\sidewalk_wheelchair\DC_DOMs\XzB9K8BHqMpZVKZR-E9MBw_DOM_0.05.tif']
+    # img_list = [r'D:\Research\sidewalk_wheelchair\DC_DOMs\Jk7bEuZo5fzWeax42a0bSw_DOM_0.05.tif']
+    # img_list = [r'D:\Research\sidewalk_wheelchair\DC_DOMs\Jk091JHY-Fnhv_ho_1Qqmg_DOM_0.05.tif']
+    # img_list = [r'D:\Research\sidewalk_wheelchair\DC_DOMs\JKABMj3d30_i7hL9T00JjA_DOM_0.05.tif']
+    # img_list = [r'D:\Research\sidewalk_wheelchair\DC_DOMs\2vaa4vNnHbgayTqpJZvKrg_DOM_0.05.tif']
+    img_list = [r'H:\Research\sidewalk_wheelchair\DC_DOMs\2UzX00nEfTL8jXMfnhoTWw_DOM_0.05.tif']
+
+    skip = 0
 
     img_list_mp = mp.Manager().list()
     for img in img_list[skip:]:
         img_list_mp.append(img)
 
-    cal_witdh_from_list(img_list)
+    process_cnt = 1
 
-    process_cnt = 15
+    if (process_cnt == 1) or (len(img_list) < process_cnt * 3):
+
+        cal_witdh_from_list(img_list)
+
+    if process_cnt > 1:
+
+        pool = mp.Pool(processes=process_cnt)
+
+        for i in range(process_cnt):
+            print(i)
+            pool.apply_async(cal_witdh_from_list, args=(img_list_mp,))
+        pool.close()
+        pool.join()
+
+
+def multi_process(func, args, process_cnt=6):
+    print("Done")
+
+
+def get_line(series):
+    p = Point(series['col'], series['row'])
+    p1 = Point(series['end_x'], series['end_y'])
+    line = LineString([p1, p])
+    return line
+
+def measurements_to_shapefile(widths_files='', saved_path=''):
+
+
+    # for idx, f in enumerate(widths_files):
+    total_cnt = len(widths_files)
+    while len(widths_files) > 0:
+        f = widths_files.pop()
+        processed_cnt = total_cnt -len(widths_files)
+        try:
+            if processed_cnt % 1000 == 0:
+                print("Processing: ", processed_cnt, f)
+            df = pd.read_csv(f)
+
+            lines = df.apply(get_line, axis=1)
+
+            gdf = gpd.GeoDataFrame(df, geometry=lines)
+            basename = os.path.basename(f).replace(".csv", ".shp")
+            new_name = os.path.join(saved_path, basename)
+            gdf.to_file(new_name)
+        except Exception as e:
+            print("Error in measurements_to_shapefile():", e, f)
+            continue
+
+
+def measurements_to_shapefile_mp(width_dir='', saved_path=''):
+    width_dir = r'D:\Research\sidewalk_wheelchair\DC_DOMs_measuremens2'
+    saved_path = r'D:\Research\sidewalk_wheelchair\DC_DOMs_width_shapes'
+
+    widths_files = glob.glob(os.path.join(width_dir, r'*.csv'))
+
+    widths_files_mp = mp.Manager().list()
+
+    for f in widths_files[10000:]:
+        widths_files_mp.append(f)
+
+    # measurements_to_shapefile(widths_files_mp, saved_path)
+
+    process_cnt = 10
     pool = mp.Pool(processes=process_cnt)
-
     for i in range(process_cnt):
-        pool.apply_async(cal_witdh_from_list, args=(img_list_mp,))
+        pool.apply_async(measurements_to_shapefile, args=(widths_files_mp, saved_path))
     pool.close()
     pool.join()
+
 
 
 if __name__ == "__main__":
     # test1()
     # cal_witdh()
-    get_all_widths()
+    # get_all_widths()
+    measurements_to_shapefile_mp()
     # img_path = r'ZXyk9lKhL5siKJglQPqfMA_DOM_0.05.tif'
 
     # cal_witdh_from_list([])
